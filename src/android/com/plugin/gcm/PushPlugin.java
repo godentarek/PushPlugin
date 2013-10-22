@@ -7,6 +7,7 @@ import org.json.JSONException;
 import org.json.JSONObject;
 
 import android.content.Context;
+import android.content.SharedPreferences;
 import android.os.Bundle;
 import android.util.Log;
 
@@ -22,15 +23,20 @@ import com.google.android.gcm.*;
 
 public class PushPlugin extends CordovaPlugin {
 	public static final String TAG = "PushPlugin";
-	
+
 	public static final String REGISTER = "register";
 	public static final String UNREGISTER = "unregister";
 	public static final String EXIT = "exit";
 
+    public static final String PREFERENCES_NAME = "com.plugin.gcm";
+    public static final String MESSAGE_NAME_FIELD = "messageName";
+    public static final String MSGCNT_NAME_FIELD = "msgcntName";
+    public static final String DELIVER_ALL_PUSHES = "deliverAllPushes";
+    public static final String SAVED_PUSHES = "savedPushes";
+
 	private static CordovaWebView gWebView;
 	private static String gECB;
 	private static String gSenderID;
-	private static Bundle gCachedExtras = null;
     private static boolean gForeground = true;
 
 	/**
@@ -54,12 +60,34 @@ public class PushPlugin extends CordovaPlugin {
 
 			try {
 				JSONObject jo = data.getJSONObject(0);
-				
+                String messageField, msgcntField;
+                boolean deliverAllPushes;
+
 				gWebView = this.webView;
 				Log.v(TAG, "execute: jo=" + jo.toString());
 
 				gECB = (String) jo.get("ecb");
 				gSenderID = (String) jo.get("senderID");
+
+				try {
+					messageField = jo.getString("messageField");
+				} catch (JSONException ex) {
+					messageField = "message";
+				}
+
+                try {
+                    msgcntField = jo.getString("msgcntField");
+                } catch (JSONException ex) {
+                    msgcntField = "msgcnt";
+                }
+
+                try {
+                    deliverAllPushes = jo.getBoolean("deliverAllPushes");
+                } catch (JSONException ex) {
+                    deliverAllPushes = false;
+                }
+
+                setFieldNames(messageField, msgcntField, deliverAllPushes);
 
 				Log.v(TAG, "execute: ECB=" + gECB + " senderID=" + gSenderID);
 
@@ -70,12 +98,7 @@ public class PushPlugin extends CordovaPlugin {
 				result = false;
 			}
 
-			if ( gCachedExtras != null) {
-				Log.v(TAG, "sending cached extras");
-				sendExtras(gCachedExtras);
-				gCachedExtras = null;
-			}
-			
+            sendSavedPushes();
 		} else if (UNREGISTER.equals(action)) {
 
 			GCMRegistrar.unregister(getApplicationContext());
@@ -98,7 +121,7 @@ public class PushPlugin extends CordovaPlugin {
 		Log.v(TAG, "sendJavascript: " + _d);
 
 		if (gECB != null && gWebView != null) {
-			gWebView.sendJavascript(_d); 
+			gWebView.sendJavascript(_d);
 		}
 	}
 
@@ -106,18 +129,59 @@ public class PushPlugin extends CordovaPlugin {
 	 * Sends the pushbundle extras to the client application.
 	 * If the client application isn't currently active, it is cached for later processing.
 	 */
-	public static void sendExtras(Bundle extras)
-	{
-		if (extras != null) {
+    public static void sendPush(Context context, Bundle extras) {
+        JSONObject json = convertBundleToJson(extras);
+
 			extras.putBoolean("foreground", gForeground);
-			if (gECB != null && gWebView != null) {
-				sendJavascript(convertBundleToJson(extras));
-			} else {
-				Log.v(TAG, "sendExtras: caching extras to send at a later time.");
-				gCachedExtras = extras;
-			}
-		}
-	}
+        if (gECB != null && gWebView != null) {
+            sendJavascript(json);
+        } else {
+            SharedPreferences prefs = context.getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE);
+            JSONArray savedPushes = getSavedPushes(context);
+
+            try {
+                // Bundles with coldstart set are duplicates of last push but with coldstart flag set
+                if (json.getBoolean("coldstart"))
+                    savedPushes.put(savedPushes.length()-1, json);
+                else
+                    savedPushes.put(json);
+            } catch (JSONException ex) {
+                savedPushes.put(json);
+
+            }
+
+            SharedPreferences.Editor editor = prefs.edit();
+            editor.putString(SAVED_PUSHES, savedPushes.toString());
+            editor.commit();
+        }
+    }
+
+    private static JSONArray getSavedPushes(Context context) {
+        SharedPreferences prefs = context.getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE);
+
+        try {
+            return new JSONArray(prefs.getString(SAVED_PUSHES, "[]"));
+        } catch (JSONException ex) {
+            return new JSONArray();
+        }
+    }
+
+    private void sendSavedPushes() {
+        Context context = getApplicationContext();
+        SharedPreferences prefs = context.getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE);
+        JSONArray savedPushes = getSavedPushes(context);
+
+        for (int i = 0; i < savedPushes.length(); i++) {
+            try {
+                sendJavascript(savedPushes.getJSONObject(i));
+            } catch (JSONException ex) {
+            }
+        }
+
+        SharedPreferences.Editor editor = prefs.edit();
+        editor.remove(SAVED_PUSHES);
+        editor.commit();
+    }
 
     @Override
     public void onPause(boolean multitasking) {
@@ -134,20 +198,20 @@ public class PushPlugin extends CordovaPlugin {
     /*
      * serializes a bundle to JSON.
      */
-    private static JSONObject convertBundleToJson(Bundle extras)
-    {
+	private static JSONObject convertBundleToJson(Bundle extras)
+	{
 		try
 		{
 			JSONObject json;
 			json = new JSONObject().put("event", "message");
-        
+
 			JSONObject jsondata = new JSONObject();
 			Iterator<String> it = extras.keySet().iterator();
 			while (it.hasNext())
 			{
 				String key = it.next();
-				Object value = extras.get(key);	
-        	
+				Object value = extras.get(key);
+
 				// System data from Android
 				if (key.equals("from") || key.equals("collapse_key"))
 				{
@@ -168,10 +232,10 @@ public class PushPlugin extends CordovaPlugin {
 					{
 						json.put(key, value);
 					}
-        		
+
 					if ( value instanceof String ) {
 					// Try to figure out if the value is another JSON object
-						
+
 						String strValue = (String)value;
 						if (strValue.startsWith("{")) {
 							try {
@@ -203,7 +267,7 @@ public class PushPlugin extends CordovaPlugin {
 				}
 			} // while
 			json.put("payload", jsondata);
-        
+
 			Log.v(TAG, "extrasToJSON: " + json.toString());
 
 			return json;
@@ -211,21 +275,32 @@ public class PushPlugin extends CordovaPlugin {
 		catch( JSONException e)
 		{
 			Log.e(TAG, "extrasToJSON: JSON exception");
-		}        	
-		return null;      	
-    }
+		}
+		return null;
+	}
 
     public static boolean isInForeground()
     {
       return gForeground;
     }
 
-    public static boolean isActive()
+    private void setFieldNames(String messageName, String msgcntName, boolean deliverAllPushes)
     {
-    	return gWebView != null;
+        Context context = getApplicationContext();
+        SharedPreferences prefs = context.getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE);
+        SharedPreferences.Editor editor = prefs.edit();
+        editor.putString(MESSAGE_NAME_FIELD, messageName);
+        editor.putString(MSGCNT_NAME_FIELD, msgcntName);
+        editor.putBoolean(DELIVER_ALL_PUSHES, deliverAllPushes);
+        editor.commit();
     }
-    
-	public void onDestroy() 
+
+    public static boolean isActive()
+	{
+		return gWebView != null;
+	}
+
+	public void onDestroy()
 	{
 		GCMRegistrar.onDestroy(getApplicationContext());
 		gWebView = null;

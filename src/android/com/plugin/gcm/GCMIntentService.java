@@ -9,11 +9,14 @@ import org.json.JSONObject;
 import android.annotation.SuppressLint;
 import android.app.ActivityManager;
 import android.app.ActivityManager.RunningTaskInfo;
-import android.app.Notification;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.content.Context;
 import android.content.Intent;
+import android.content.SharedPreferences;
+import android.media.Ringtone;
+import android.media.RingtoneManager;
+import android.net.Uri;
 import android.os.Bundle;
 import android.support.v4.app.NotificationCompat;
 import android.util.Log;
@@ -23,7 +26,7 @@ public class GCMIntentService extends GCMBaseIntentService {
 
 	public static final int NOTIFICATION_ID = 237;
 	private static final String TAG = "GCMIntentService";
-	
+
 	public GCMIntentService() {
 		super("GCMIntentService");
 	}
@@ -67,12 +70,11 @@ public class GCMIntentService extends GCMBaseIntentService {
 		Bundle extras = intent.getExtras();
 		if (extras != null)
 		{
-			PushPlugin.sendExtras(extras);
-
+                        PushPlugin.sendPush(context, extras);
 			// Send a notification if there is a message and not in foreground
-			if (!PushPlugin.isInForeground() && extras.getString("message").length() != 0) {
+
+			if (!PushPlugin.isInForeground())
 				createNotification(context, extras);
-			}
 		}
 	}
 
@@ -86,47 +88,75 @@ public class GCMIntentService extends GCMBaseIntentService {
 		notificationIntent.putExtra("pushBundle", extras);
 
 		PendingIntent contentIntent = PendingIntent.getActivity(this, 0, notificationIntent, PendingIntent.FLAG_UPDATE_CURRENT);
-		
+
 		NotificationCompat.Builder mBuilder =
 			new NotificationCompat.Builder(context)
-				.setDefaults(Notification.DEFAULT_ALL)
 				.setSmallIcon(context.getApplicationInfo().icon)
 				.setWhen(System.currentTimeMillis())
 				.setContentTitle(extras.getString("title"))
 				.setTicker(extras.getString("title"))
 				.setContentIntent(contentIntent);
 
-		String message = extras.getString("message");
+        SharedPreferences prefs = context.getSharedPreferences(PushPlugin.PREFERENCES_NAME, Context.MODE_PRIVATE);
+        String messageField = prefs.getString(PushPlugin.MESSAGE_NAME_FIELD, "message");
+        String msgcntField = prefs.getString(PushPlugin.MSGCNT_NAME_FIELD, "msgcnt");
+
+        String message = extras.getString(messageField);
 		if (message != null) {
 			mBuilder.setContentText(message);
 		} else {
 			mBuilder.setContentText("<missing message content>");
 		}
 
-		String msgcnt = extras.getString("msgcnt");
+		String msgcnt = extras.getString(msgcntField);
 		if (msgcnt != null) {
 			mBuilder.setNumber(Integer.parseInt(msgcnt));
 		}
-		
+
 		mNotificationManager.notify((String) appName, NOTIFICATION_ID, mBuilder.build());
+		tryPlayRingtone();
 	}
-	
+
+	private void tryPlayRingtone()
+	{
+		try {
+			Uri notification = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION);
+			Ringtone r = RingtoneManager.getRingtone(getApplicationContext(), notification);
+			r.play();
+		}
+		catch (Exception e) {
+			Log.e(TAG, "failed to play notification ringtone");
+		}
+	}
+
 	public static void cancelNotification(Context context)
 	{
 		NotificationManager mNotificationManager = (NotificationManager) context.getSystemService(Context.NOTIFICATION_SERVICE);
-		mNotificationManager.cancel((String)getAppName(context), NOTIFICATION_ID);	
+		mNotificationManager.cancel((String)getAppName(context), NOTIFICATION_ID);
 	}
-	
+
 	private static String getAppName(Context context)
 	{
-		CharSequence appName = 
+		CharSequence appName =
 				context
 					.getPackageManager()
 					.getApplicationLabel(context.getApplicationInfo());
-		
+
 		return (String)appName;
 	}
-	
+
+	public boolean isInForeground()
+	{
+		ActivityManager activityManager = (ActivityManager) getApplicationContext().getSystemService(Context.ACTIVITY_SERVICE);
+		List<RunningTaskInfo> services = activityManager
+				.getRunningTasks(Integer.MAX_VALUE);
+
+		if (services.get(0).topActivity.getPackageName().toString().equalsIgnoreCase(getApplicationContext().getPackageName().toString()))
+			return true;
+
+		return false;
+	}
+
 	@Override
 	public void onError(Context context, String errorId) {
 		Log.e(TAG, "onError - errorId: " + errorId);
