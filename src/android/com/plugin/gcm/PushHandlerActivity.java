@@ -48,6 +48,7 @@ public class PushHandlerActivity extends Activity
 			if ( !isPushPluginActive ) {
 				originalExtras.putBoolean("coldstart", true);
 			}
+            originalExtras.putBoolean("notificationclick", true);
 
             PushPlugin.sendPush(getApplicationContext(), originalExtras);
 		}
